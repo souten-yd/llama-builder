@@ -67,14 +67,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # CUDA 12.4.1 has no NVIDIA apt repository for Ubuntu 24.04, so pin to 22.04.
+          # Pin to Ubuntu 22.04 so the resulting binary links against glibc 2.35,
+          # which keeps it runnable on the RunPod CUDA 12.8 base images that
+          # KasaneCore deploys onto (those images ship Ubuntu 22.04 / glibc 2.35).
           - target: linux-cuda
             runs_on: ubuntu-22.04
             backend: cuda
             ext: tar.gz
             cmake_flags: -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_NATIVE=OFF
             artifact_prefix: llama-linux-cuda
-            cuda_version: 12.4.1
+            cuda_version: 12.8.1
           - target: windows-vulkan
             runs_on: windows-latest
             backend: vulkan
@@ -98,7 +100,7 @@ jobs:
 
       - name: Setup CUDA toolkit
         if: matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.21
+        uses: Jimver/cuda-toolkit@v0.2.24
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
