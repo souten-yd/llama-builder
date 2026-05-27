@@ -67,18 +67,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # CUDA 12.4.1 has no NVIDIA apt repository for Ubuntu 24.04, so pin to 22.04.
           - target: linux-cuda
-            runs_on: ubuntu-latest
+            runs_on: ubuntu-22.04
             backend: cuda
             ext: tar.gz
-            cmake_flags: -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+            cmake_flags: -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_NATIVE=OFF
             artifact_prefix: llama-linux-cuda
             cuda_version: 12.4.1
           - target: windows-vulkan
             runs_on: windows-latest
             backend: vulkan
             ext: zip
-            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF
             artifact_prefix: llama-windows-vulkan
 
     steps:
@@ -102,12 +103,30 @@ jobs:
           cuda: ${{ matrix.cuda_version }}
           method: network
 
+      # The previous humbletim/setup-vulkan-sdk@v1.2.1 action was failing because
+      # `latest` version resolution is broken, and its component list lacked
+      # glslc (needed by llama.cpp's vulkan-shaders-gen). Install the official
+      # LunarG SDK directly so glslc/shaderc are guaranteed to be present.
       - name: Setup Vulkan SDK
         if: matrix.backend == 'vulkan'
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
-        with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers,Vulkan-Loader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Invoke-RestMethod -Uri 'https://vulkan.lunarg.com/sdk/latest/windows.txt').Trim()
+          Write-Host "Installing Vulkan SDK $version"
+          $installerUrl = "https://sdk.lunarg.com/sdk/download/$version/windows/vulkansdk-windows-X64-$version.exe"
+          $installerPath = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
+          & $installerPath --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vulkan SDK installer failed with exit code $LASTEXITCODE"
+          }
+          $sdkRoot = "C:\VulkanSDK\$version"
+          if (-not (Test-Path "$sdkRoot\Bin\glslc.exe")) {
+            throw "Vulkan SDK installation did not produce glslc at $sdkRoot\Bin\glslc.exe"
+          }
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$sdkRoot\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Clone latest llama.cpp source
         shell: bash
