@@ -70,11 +70,20 @@ jobs:
           # Pin to Ubuntu 22.04 so the resulting binary links against glibc 2.35,
           # which keeps it runnable on the RunPod CUDA 12.8 base images that
           # KasaneCore deploys onto (those images ship Ubuntu 22.04 / glibc 2.35).
+          #
+          # CMAKE_CUDA_ARCHITECTURES is an explicit list rather than `all-major`
+          # because CUDA 12.8's `all-major` adds sm_120 (consumer Blackwell, e.g.
+          # RTX 50-series), and llama.cpp's mmq-instance-mxfp4.cu emits
+          # `mma.kind::mxf4` PTX that ptxas only accepts on sm_100a/sm_103a;
+          # building for sm_120 fails with "Feature '.kind::mxf4' not supported
+          # on .target 'sm_120'". The list below covers the GPUs RunPod actually
+          # offers (V100/T4/A100/A30/A40/RTX 30xx/RTX 4090/L40/L4/H100/H200);
+          # B200 (sm_100) and RTX 5090 (sm_120) fall back to PTX JIT from sm_90.
           - target: linux-cuda
             runs_on: ubuntu-22.04
             backend: cuda
             ext: tar.gz
-            cmake_flags: -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_NATIVE=OFF
+            cmake_flags: -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CUDA_ARCHITECTURES=70;75;80;86;89;90" -DGGML_NATIVE=OFF
             artifact_prefix: llama-linux-cuda
             cuda_version: 12.8.1
           - target: windows-vulkan
