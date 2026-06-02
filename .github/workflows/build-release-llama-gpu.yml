@@ -90,7 +90,7 @@ jobs:
             runs_on: windows-latest
             backend: vulkan
             ext: zip
-            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF
+            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
             artifact_prefix: llama-windows-vulkan
 
     steps:
@@ -145,14 +145,35 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch "${{ needs.prepare.outputs.latest_tag }}" https://github.com/ggml-org/llama.cpp.git llama.cpp
 
-      - name: Build target
+      - name: Build target (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           cmake -S llama.cpp -B llama.cpp/build -G Ninja ${{ matrix.cmake_flags }}
           cmake --build llama.cpp/build --config Release
 
+      - name: Build llama-server (Windows Vulkan)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S llama.cpp -B build -G Ninja ${{ matrix.cmake_flags }}
+          cmake --build build --config Release --target llama-server --parallel
+
+          Write-Host "Generated executables:"
+          Get-ChildItem -Path build -Recurse -Filter "*.exe" | Select-Object FullName
+
+          $server = @(Get-ChildItem -Path build -Recurse -Filter "llama-server.exe")
+          if ($server.Count -eq 0) {
+            throw "llama-server.exe was not produced by the Windows Vulkan build"
+          }
+
+          Write-Host "Found llama-server.exe:"
+          $server | Select-Object FullName
+
       - name: Verify version
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -172,11 +193,27 @@ jobs:
           set -euo pipefail
           tar -C llama.cpp/build -czf "${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.tar.gz" .
 
-      - name: Package artifact (Windows)
+      - name: Package artifact (Windows Vulkan)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "llama.cpp/build/*" -DestinationPath "${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.zip" -Force
+          $ErrorActionPreference = 'Stop'
+          $dist = "dist/llama-vulkan-win64"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+          $server = @(Get-ChildItem -Path build -Recurse -Filter "llama-server.exe")
+          if ($server.Count -eq 0) {
+            throw "llama-server.exe was not produced by the Windows Vulkan build"
+          }
+
+          $serverPath = $server[0].FullName
+          $serverDir = Split-Path -Parent $serverPath
+          Copy-Item -Path $serverPath -Destination $dist -Force
+
+          Get-ChildItem -Path $serverDir -Filter "*.dll" | Copy-Item -Destination $dist -Force
+
+          Write-Host "Packaged Windows Vulkan artifact contents:"
+          Get-ChildItem -Path $dist | Select-Object Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -184,7 +221,7 @@ jobs:
           name: ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}
           path: |
             ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.tar.gz
-            ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.zip
+            dist/llama-vulkan-win64/**
           if-no-files-found: error
 
   release:
