@@ -90,7 +90,7 @@ jobs:
             runs_on: windows-latest
             backend: vulkan
             ext: zip
-            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
+            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF
             artifact_prefix: llama-windows-vulkan
 
     steps:
@@ -161,8 +161,8 @@ jobs:
           cmake -S llama.cpp -B build -G Ninja ${{ matrix.cmake_flags }}
           cmake --build build --config Release --target llama-server --parallel
 
-          Write-Host "Generated executables:"
-          Get-ChildItem -Path build -Recurse -Filter "*.exe" | Select-Object FullName
+          Write-Host "Generated executables and DLLs:"
+          Get-ChildItem -Path build -Recurse -Include "*.exe","*.dll" | Select-Object FullName
 
           $server = @(Get-ChildItem -Path build -Recurse -Filter "llama-server.exe")
           if ($server.Count -eq 0) {
@@ -198,30 +198,76 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dist = "dist/llama-vulkan-win64"
+          $dist = "dist/llama-windows-vulkan-x64"
+          $zip = "dist/llama-windows-vulkan-x64.zip"
+          Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
+          Remove-Item -Force $zip -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
-          $server = @(Get-ChildItem -Path build -Recurse -Filter "llama-server.exe")
-          if ($server.Count -eq 0) {
+          Write-Host "Generated executables and DLLs:"
+          Get-ChildItem -Path build -Recurse -Include "*.exe","*.dll" | Select-Object FullName
+
+          $server = Get-ChildItem -Path build -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+          if (-not $server) {
             throw "llama-server.exe was not produced by the Windows Vulkan build"
           }
 
-          $serverPath = $server[0].FullName
-          $serverDir = Split-Path -Parent $serverPath
-          Copy-Item -Path $serverPath -Destination $dist -Force
+          $runtimeDir = $server.DirectoryName
+          Write-Host "Runtime output directory: $runtimeDir"
 
-          Get-ChildItem -Path $serverDir -Filter "*.dll" | Copy-Item -Destination $dist -Force
+          Copy-Item -Path "$runtimeDir/*.exe" -Destination $dist -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "$runtimeDir/*.dll" -Destination $dist -Force -ErrorAction SilentlyContinue
+
+          Get-ChildItem -Path build -Recurse -Filter "*.dll" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination $dist -Force
+          }
+
+          Copy-Item -Path "llama.cpp/README.md" -Destination $dist -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "llama.cpp/LICENSE" -Destination $dist -Force -ErrorAction SilentlyContinue
+
+          if (-not (Test-Path "$dist/llama-server.exe")) {
+            throw "dist is missing llama-server.exe"
+          }
+
+          $dllCount = @(Get-ChildItem -Path $dist -Filter "*.dll" -ErrorAction SilentlyContinue).Count
+          if ($dllCount -eq 0) {
+            throw "dist contains no DLL files. Windows Vulkan package is likely incomplete."
+          }
+
+          $manifest = Get-ChildItem -Path $dist | Sort-Object Name | ForEach-Object {
+            [PSCustomObject]@{
+              name = $_.Name
+              size = $_.Length
+              sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Out-File "$dist/manifest.json" -Encoding utf8
 
           Write-Host "Packaged Windows Vulkan artifact contents:"
           Get-ChildItem -Path $dist | Select-Object Name, Length
 
-      - name: Upload artifact
+          Compress-Archive -Path "$dist/*" -DestinationPath $zip -Force
+          if (-not (Test-Path $zip)) {
+            throw "zip was not created"
+          }
+
+          Write-Host "Created Windows Vulkan package:"
+          Get-Item $zip | Select-Object FullName, Length
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}
-          path: |
-            ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.tar.gz
-            dist/llama-vulkan-win64/**
+          path: ${{ matrix.artifact_prefix }}-${{ needs.prepare.outputs.latest_tag }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload artifact (Windows Vulkan)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-windows-vulkan-x64
+          path: dist/llama-windows-vulkan-x64.zip
           if-no-files-found: error
 
   release:
@@ -258,4 +304,6 @@ jobs:
             - Windows amd64 Vulkan
 
             Upstream tag: `${{ needs.prepare.outputs.latest_tag }}`
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
