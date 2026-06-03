@@ -90,7 +90,7 @@ jobs:
             runs_on: windows-latest
             backend: vulkan
             ext: zip
-            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF
+            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF
             artifact_prefix: llama-windows-vulkan
 
     steps:
@@ -161,7 +161,7 @@ jobs:
           cmake -S llama.cpp -B build -G Ninja ${{ matrix.cmake_flags }}
 
           Write-Host "=== CMakeCache relevant flags ==="
-          Get-Content build/CMakeCache.txt | Select-String "LLAMA_CURL|GGML_VULKAN|LLAMA_BUILD_SERVER|BUILD_SHARED_LIBS"
+          Get-Content build/CMakeCache.txt | Select-String "LLAMA_OPENSSL|LLAMA_CURL|GGML_VULKAN|LLAMA_BUILD_SERVER|BUILD_SHARED_LIBS"
 
           cmake --build build --config Release --target llama-server --parallel
 
@@ -175,6 +175,24 @@ jobs:
 
           Write-Host "Found llama-server.exe:"
           $server | Select-Object FullName
+
+          $serverPath = ($server | Select-Object -First 1).FullName
+          Write-Host "Checking dependencies for $serverPath"
+          $dependencyText = ""
+          try {
+            $dependencyText = & dumpbin /DEPENDENTS $serverPath 2>&1 | Out-String
+            Write-Host "=== dumpbin /DEPENDENTS ==="
+            Write-Host $dependencyText
+          } catch {
+            Write-Host "dumpbin unavailable. Falling back to binary string scan."
+            $bytes = [System.IO.File]::ReadAllBytes($serverPath)
+            $dependencyText = [System.Text.Encoding]::ASCII.GetString($bytes)
+          }
+
+          $needsOpenSsl =
+            ($dependencyText -match "libssl-3-x64\.dll") -or
+            ($dependencyText -match "libcrypto-3-x64\.dll")
+          Write-Host "needsOpenSsl=$needsOpenSsl"
 
       - name: Verify version
         if: runner.os == 'Linux'
