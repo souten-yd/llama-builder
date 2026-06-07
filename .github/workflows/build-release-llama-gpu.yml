@@ -90,7 +90,7 @@ jobs:
             runs_on: windows-latest
             backend: vulkan
             ext: zip
-            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF
+            cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=ON
             artifact_prefix: llama-windows-vulkan
 
     steps:
@@ -139,6 +139,38 @@ jobs:
           "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "$sdkRoot\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) {
+            $vcpkgRoot = 'C:\vcpkg'
+          }
+
+          $vcpkgExe = Join-Path $vcpkgRoot 'vcpkg.exe'
+          if (-not (Test-Path $vcpkgExe)) {
+            throw "vcpkg.exe was not found at $vcpkgRoot"
+          }
+
+          & $vcpkgExe install openssl:x64-windows
+
+          $opensslBin = Join-Path $vcpkgRoot 'installed\x64-windows\bin'
+          $sslDll = Join-Path $opensslBin 'libssl-3-x64.dll'
+          $cryptoDll = Join-Path $opensslBin 'libcrypto-3-x64.dll'
+
+          if (-not (Test-Path $sslDll)) {
+            throw "Required OpenSSL DLL was not installed: $sslDll"
+          }
+
+          if (-not (Test-Path $cryptoDll)) {
+            throw "Required OpenSSL DLL was not installed: $cryptoDll"
+          }
+
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Clone latest llama.cpp source
         shell: bash
         run: |
@@ -158,10 +190,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cmake -S llama.cpp -B build -G Ninja ${{ matrix.cmake_flags }}
+          $needsOpenSsl = $true
+
+          cmake -S llama.cpp -B build -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DOPENSSL_ROOT_DIR="$env:VCPKG_ROOT\installed\x64-windows" `
+            ${{ matrix.cmake_flags }}
 
           Write-Host "=== CMakeCache relevant flags ==="
-          Get-Content build/CMakeCache.txt | Select-String "LLAMA_OPENSSL|LLAMA_CURL|GGML_VULKAN|LLAMA_BUILD_SERVER|BUILD_SHARED_LIBS"
+          Get-Content build/CMakeCache.txt | Select-String "LLAMA_OPENSSL|GGML_VULKAN|LLAMA_BUILD_SERVER|BUILD_SHARED_LIBS|CMAKE_TOOLCHAIN_FILE|VCPKG_TARGET_TRIPLET|OPENSSL_ROOT_DIR"
 
           cmake --build build --config Release --target llama-server --parallel
 
@@ -175,23 +213,6 @@ jobs:
 
           Write-Host "Found llama-server.exe:"
           $server | Select-Object FullName
-
-          $serverPath = ($server | Select-Object -First 1).FullName
-          Write-Host "Checking dependencies for $serverPath"
-          $dependencyText = ""
-          try {
-            $dependencyText = & dumpbin /DEPENDENTS $serverPath 2>&1 | Out-String
-            Write-Host "=== dumpbin /DEPENDENTS ==="
-            Write-Host $dependencyText
-          } catch {
-            Write-Host "dumpbin unavailable. Falling back to binary string scan."
-            $bytes = [System.IO.File]::ReadAllBytes($serverPath)
-            $dependencyText = [System.Text.Encoding]::ASCII.GetString($bytes)
-          }
-
-          $needsOpenSsl =
-            ($dependencyText -match "libssl-3-x64\.dll") -or
-            ($dependencyText -match "libcrypto-3-x64\.dll")
           Write-Host "needsOpenSsl=$needsOpenSsl"
 
       - name: Verify version
@@ -220,8 +241,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dist = "dist/llama-windows-vulkan-x64"
-          $zip = "dist/llama-windows-vulkan-x64.zip"
+          $needsOpenSsl = $true
+          $distRoot = 'dist'
+          $packageName = 'llama-windows-vulkan-x64'
+          $dist = Join-Path $distRoot $packageName
+          $zip = Join-Path $distRoot "$packageName.zip"
+
           Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
           Remove-Item -Force $zip -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
@@ -234,23 +259,6 @@ jobs:
             throw "llama-server.exe was not produced by the Windows Vulkan build"
           }
 
-          Write-Host "Checking dependencies for $($server.FullName)"
-          $dependencyText = ""
-          try {
-            $dependencyText = & dumpbin /DEPENDENTS $server.FullName 2>&1 | Out-String
-            Write-Host "=== dumpbin /DEPENDENTS ==="
-            Write-Host $dependencyText
-          } catch {
-            Write-Host "dumpbin unavailable, fallback to binary string scan"
-            $bytes = [System.IO.File]::ReadAllBytes($server.FullName)
-            $dependencyText = [System.Text.Encoding]::ASCII.GetString($bytes)
-            Write-Host "=== OpenSSL binary string scan matches ==="
-            $dependencyText | Select-String "libssl-3-x64\.dll|libcrypto-3-x64\.dll" -AllMatches
-          }
-
-          $needsOpenSsl =
-            ($dependencyText -match "libssl-3-x64\.dll") -or
-            ($dependencyText -match "libcrypto-3-x64\.dll")
           Write-Host "needsOpenSsl=$needsOpenSsl"
 
           $runtimeDir = $server.DirectoryName
@@ -263,63 +271,52 @@ jobs:
             Copy-Item -Path $_.FullName -Destination $dist -Force
           }
 
-          if ($needsOpenSsl) {
-            Write-Host "llama-server.exe depends on OpenSSL 3 DLLs. Searching for required DLLs..."
-            $searchRoots = @(
-              $env:GITHUB_WORKSPACE,
-              "C:\vcpkg",
-              "C:\Program Files\OpenSSL-Win64",
-              "C:\Program Files",
-              "C:\Windows\System32"
-            )
+          $opensslBin = Join-Path $env:VCPKG_ROOT 'installed\x64-windows\bin'
+          $sslDll = Join-Path $opensslBin 'libssl-3-x64.dll'
+          $cryptoDll = Join-Path $opensslBin 'libcrypto-3-x64.dll'
 
-            $ssl = $null
-            $crypto = $null
-            foreach ($root in $searchRoots) {
-              if (Test-Path $root) {
-                Write-Host "Searching $root"
-                if (-not $ssl) {
-                  $ssl = Get-ChildItem -Path $root -Recurse -Filter "libssl-3-x64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-                }
-                if (-not $crypto) {
-                  $crypto = Get-ChildItem -Path $root -Recurse -Filter "libcrypto-3-x64.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-                }
-              }
-            }
-
-            if (-not $ssl) {
-              throw "llama-server.exe requires libssl-3-x64.dll but it was not found"
-            }
-            if (-not $crypto) {
-              throw "llama-server.exe requires libcrypto-3-x64.dll but it was not found"
-            }
-
-            Copy-Item -Path $ssl.FullName -Destination $dist -Force
-            Copy-Item -Path $crypto.FullName -Destination $dist -Force
-          } else {
-            Write-Host "llama-server.exe does not depend on OpenSSL 3 DLLs; OpenSSL DLLs are not required in the package."
+          if (-not (Test-Path $sslDll)) {
+            throw "Required OpenSSL DLL not found: $sslDll"
           }
 
-          Copy-Item -Path "llama.cpp/README.md" -Destination $dist -Force -ErrorAction SilentlyContinue
-          Copy-Item -Path "llama.cpp/LICENSE" -Destination $dist -Force -ErrorAction SilentlyContinue
-
-          if (-not (Test-Path "$dist/llama-server.exe")) {
-            throw "dist is missing llama-server.exe"
+          if (-not (Test-Path $cryptoDll)) {
+            throw "Required OpenSSL DLL not found: $cryptoDll"
           }
 
-          if ($needsOpenSsl) {
-            if (-not (Test-Path "$dist/libssl-3-x64.dll")) {
-              throw "dist is missing libssl-3-x64.dll required by llama-server.exe"
-            }
-            if (-not (Test-Path "$dist/libcrypto-3-x64.dll")) {
-              throw "dist is missing libcrypto-3-x64.dll required by llama-server.exe"
+          Copy-Item -Path $sslDll -Destination $dist -Force
+          Copy-Item -Path $cryptoDll -Destination $dist -Force
+
+          Copy-Item -Path "llama.cpp/README.md" -Destination "$dist/README-llama.cpp.md" -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "llama.cpp/LICENSE" -Destination "$dist/LICENSE-llama.cpp" -Force -ErrorAction SilentlyContinue
+
+          $vcpkgCopyright = Join-Path $env:VCPKG_ROOT 'installed\x64-windows\share\openssl\copyright'
+          if (Test-Path $vcpkgCopyright) {
+            Copy-Item -Path $vcpkgCopyright -Destination "$dist/LICENSE-OpenSSL.txt" -Force
+          }
+
+          $requiredFiles = @(
+            'llama-server.exe',
+            'libssl-3-x64.dll',
+            'libcrypto-3-x64.dll'
+          )
+
+          foreach ($requiredFile in $requiredFiles) {
+            $requiredPath = Join-Path $dist $requiredFile
+            if (-not (Test-Path $requiredPath)) {
+              throw "Windows package is incomplete. Missing: $requiredFile"
             }
           }
 
-          $files = Get-ChildItem -Path $dist | Sort-Object Name
+          $files = Get-ChildItem -Path $dist -File | Sort-Object Name
           $manifest = [PSCustomObject]@{
-            package = "llama-windows-vulkan-x64"
-            openssl_dependency = [bool]$needsOpenSsl
+            package = $packageName
+            platform = 'windows-x64'
+            backend = 'vulkan'
+            openssl_dependency = $true
+            required_openssl_dlls = @(
+              'libssl-3-x64.dll',
+              'libcrypto-3-x64.dll'
+            )
             files = @(
               $files | ForEach-Object {
                 [PSCustomObject]@{
@@ -331,6 +328,10 @@ jobs:
             )
           }
           $manifest | ConvertTo-Json -Depth 8 | Out-File "$dist/manifest.json" -Encoding utf8
+
+          if (-not (Test-Path "$dist/manifest.json")) {
+            throw "Windows package is incomplete. Missing: manifest.json"
+          }
 
           Write-Host "Packaged Windows Vulkan artifact contents:"
           Get-ChildItem -Path $dist | Select-Object Name, Length
