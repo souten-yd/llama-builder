@@ -92,6 +92,13 @@ jobs:
             ext: tar.gz
             cmake_flags: -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF
             artifact_prefix: llama-linux-amd-vulkan
+          - target: linux-rocm-r9700
+            runs_on: ubuntu-22.04
+            backend: rocm
+            ext: tar.gz
+            cmake_flags: -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGPU_TARGETS=gfx1201 -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF
+            artifact_prefix: llama-linux-rocm-r9700
+            rocm_version: 7.2.2
           - target: windows-vulkan
             runs_on: windows-latest
             backend: vulkan
@@ -170,6 +177,28 @@ jobs:
             libvulkan-dev \
             mesa-vulkan-drivers \
             vulkan-tools
+
+      - name: Install Linux ROCm dependencies
+        if: runner.os == 'Linux' && matrix.backend == 'rocm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${{ matrix.rocm_version }} jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            rocm-hip-sdk \
+            rocm-device-libs \
+            hipblas-dev \
+            rocblas-dev
+          echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
+          echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
+          echo "HIPCXX=/opt/rocm/llvm/bin/clang++" >> "$GITHUB_ENV"
+          echo "/opt/rocm/bin" >> "$GITHUB_PATH"
+          echo "/opt/rocm/llvm/bin" >> "$GITHUB_PATH"
 
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
@@ -424,6 +453,7 @@ jobs:
             Targets:
             - Linux amd64 CUDA
             - Linux amd64 Vulkan for AMD GPUs
+            - Linux amd64 ROCm for Radeon AI PRO R9700
             - Windows amd64 Vulkan
 
             Upstream tag: `${{ needs.prepare.outputs.latest_tag }}`
