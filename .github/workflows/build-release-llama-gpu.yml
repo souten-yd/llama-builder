@@ -96,7 +96,7 @@ jobs:
             runs_on: ubuntu-22.04
             backend: rocm
             ext: tar.gz
-            cmake_flags: -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGPU_TARGETS=gfx1201 -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF
+            cmake_flags: -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGPU_TARGETS=gfx1201 "-DCMAKE_BUILD_RPATH=/opt/rocm/lib" "-DCMAKE_INSTALL_RPATH=/opt/rocm/lib" -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF
             artifact_prefix: llama-linux-rocm-r9700
             rocm_version: 10.0.0
             rocm_package: amdrocm-core-dev10.0-gfx1201
@@ -205,6 +205,7 @@ jobs:
 
           test -x /opt/rocm/bin/hipcc
           test -x /opt/rocm/llvm/bin/clang++
+          test -e /opt/rocm/lib/libhipblas.so.3
           /opt/rocm/bin/hipcc --version
           dpkg-query -W -f='${Package} ${Version}\n' "${{ matrix.rocm_package }}"
 
