@@ -98,7 +98,8 @@ jobs:
             ext: tar.gz
             cmake_flags: -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGPU_TARGETS=gfx1201 -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF
             artifact_prefix: llama-linux-rocm-r9700
-            rocm_version: 7.2.2
+            rocm_version: 10.0.0
+            rocm_package: amdrocm-core-dev10.0-gfx1201
           - target: windows-vulkan
             runs_on: windows-latest
             backend: vulkan
@@ -184,21 +185,29 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          sudo apt-get install -y --no-install-recommends ca-certificates wget gnupg
           sudo install -d -m 0755 /etc/apt/keyrings
-          curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${{ matrix.rocm_version }} jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
-          sudo tee /etc/apt/preferences.d/rocm-pin >/dev/null <<'EOF'
-          Package: *
-          Pin: origin repo.radeon.com
-          Pin-Priority: 600
+          wget -qO- https://stable.repo.amd.com/rocm/gpg/packages.gpg \
+            | gpg --dearmor \
+            | sudo tee /etc/apt/keyrings/amdrocm.gpg >/dev/null
+          sudo tee /etc/apt/sources.list.d/amdrocm-stable.sources >/dev/null <<'EOF'
+          X-Repo-Id: amdrocm-stable
+          Types: deb
+          URIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2204/
+          Suites: stable
+          Components: main
+          Architectures: amd64
+          Signed-By: /etc/apt/keyrings/amdrocm.gpg
+          Enabled: yes
           EOF
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            rocm-hip-sdk \
-            rocm-device-libs \
-            hipblas-dev \
-            rocblas-dev
+          sudo apt-get install -y --no-install-recommends "${{ matrix.rocm_package }}"
+
+          test -x /opt/rocm/bin/hipcc
+          test -x /opt/rocm/llvm/bin/clang++
+          /opt/rocm/bin/hipcc --version
+          dpkg-query -W -f='${Package} ${Version}\n' "${{ matrix.rocm_package }}"
+
           echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
           echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
           echo "HIPCXX=/opt/rocm/llvm/bin/clang++" >> "$GITHUB_ENV"
